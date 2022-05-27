@@ -87,3 +87,14 @@
     workspaces:
     - name: workspace
       workspace: workspace
+- op: add
+  path: /spec/tasks/-
+  value:
+    name: snyk-code-test
+    runAfter:
+      - build-container
+    taskRef:
+      name:sny-code-test
+    workspace:
+    - name: workspace
+      workspace: workspace

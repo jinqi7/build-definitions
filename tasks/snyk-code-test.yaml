@@ -1,0 +1,56 @@
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: snyk-code-test
+spec:
+  description: >-
+    Static code security test with snyk
+  results:
+    - description: Test output
+      name: HACBS_TEST_OUTPUT
+  params:
+    - name: shared-secret
+      default: test-team-snyk
+    - name: args
+      type: string
+      description: extra args needs to append
+      default: "--all-projects --exclude=test*,vendor,deps"
+  volumes:
+    - name: snyk-secret
+      csi:
+        readOnly: true
+        driver: csi.sharedresource.openshift.io
+        volumeAttributes:
+          sharedSecret: $(params.shared-secret)
+  steps:
+    - name: snyk-code-test
+      image: quay.io/redhat-appstudio/hacbs-test:feature-sast
+      workingDir: $(workspaces.workspace.path)/hacbs/$(context.task.name)
+      volumeMounts:
+        - name: snyk-secret
+          mountPath: "/etc/secrets"
+          readOnly: true
+      script: |
+        #!/usr/bin/env bash
+        SNYK_TOKEN="$(cat /etc/secrets/snyk_token)"
+        export SNYK_TOKEN
+        pushd $(workspaces.workspace.path)
+        SNYK_EXIT_CODE=0
+        snyk code test $(params.args) --sarif-file-output=snyk_code_test_out.json 1>&2> stdout.out || SNYK_EXIT_CODE=$?
+        if [[ "$SNYK_EXIT_CODE" -eq 0 ]] || [[ "$SNYK_EXIT_CODE" -eq 1 ]]; then
+          HACBS_TEST_OUTPUT=$(jq -rce --arg date $(date +%s) \
+            '{ result: (if (.runs[].results | length > 0) then "FAILURE" else "SUCCESS" end),
+                   timestamp: $date,
+                   namespace: "default",
+                   successes: 0,
+                   failures: (.runs[].results // [])|map(.message.text)
+                 }' snyk_code_test_out.json || true)
+        else
+          ERR_MSG="$(cat stdout.out)"
+          HACBS_ERROR_OUTPUT=$(jq -rc --arg date $(date +%s) --arg ERR_MESSAGE "${ERR_MSG}" --null-input \
+            '{result: "ERROR", timestamp: $date, failures: [$ERR_MESSAGE]}')
+        fi
+        popd
+        echo "${HACBS_TEST_OUTPUT:-${HACBS_ERROR_OUTPUT}}" | tee $(results.HACBS_TEST_OUTPUT.path)
+  workspaces:
+  - name: workspace
